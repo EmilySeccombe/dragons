@@ -1,7 +1,10 @@
 # Riverine Odonata Project Code
 # 28/05/2025 Emily Seccombe
-TODO: check what else should go here
+# This file imports riverine Odonata presence-only data from the British 
+# Dragonfly Society Recording Scheme dataset on NBN Atlas. The data is then
+# sorted for use in analysis.
 
+# Citations ----
 # Data source:
 # Citation for NBN Atlas: 
 # NBN Atlas occurrence download at https://nbnatlas.org accessed on 28 May 2025.
@@ -24,23 +27,38 @@ TODO: check what else should go here
 # *4*(43), 1686. doi:10.21105/joss.01686
 # <https://doi.org/10.21105/joss.01686>.
 
-# Import Data
+# Import Dragonfly Data ----
 library(readr)
 riverine_odonata <- read_csv("G:/My Drive/Research project/riverine_odonata.csv")
 
-# Clean Data
+# Clean Dragonfly Data ----
 install.packages("tidyverse")
 library(tidyverse)
 # Select columns required
-r_o_selected_headers <- select(riverine_odonata, lifeStage, eventDate, habitat, locationID, higherGeographyID, waterBody, geodeticDatum, coordinatePrecision, gridReference, scientificName)
+r_o_selected_headers <- select(riverine_odonata, lifeStage, eventDate, gridReference, scientificName)
 
 # Look at life stage variety:
 lifeStageVariety <- table(r_o_selected_headers$lifeStage)
 view(lifeStageVariety)
 
-# Look at record dates:
-eventDateVariety <- table(r_o_selected_headers$eventDate)
-view(eventDateVariety)
+# Convert to R Date format
+#TODO check the next step deals with all eventualities correctly!
+r_o_selected_headers$eventDate <- as.Date(r_o_selected_headers$eventDate)
 # Remove anything before 2010
-TODO
-r_o_selected_headers %>% filter(eventDate > '2010-01-01')
+r_o_since2010 <- r_o_selected_headers %>% filter(year(eventDate) > "2010")
+
+# Look at species variety:
+spVariety <- table(r_o_since2010$scientificName)
+view(spVariety)
+# Maybe not enough of some species - to check later 
+
+# Look at grid refs and their precision:
+grVariety <- table(r_o_since2010$gridReference)
+view(grVariety)
+r_o_since2010$grPrecision <- nchar(r_o_since2010$gridReference)
+grPresVariety <- table(r_o_since2010$grPrecision)
+view(grPresVariety)
+# Remove entries where precision is less than 6 figures.
+r_o_since2010_more_precise <- r_o_since2010 %>% filter(grPrecision > 5)
+
+# Import water quality data ----
