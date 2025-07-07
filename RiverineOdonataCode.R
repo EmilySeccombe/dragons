@@ -1,11 +1,14 @@
 # Riverine Odonata Project Code
 # 28/05/2025 Emily Seccombe
 # This file imports riverine Odonata presence-only data from the British 
-# Dragonfly Society Recording Scheme dataset on NBN Atlas. The data is then
-# sorted for use in analysis.
+# Dragonfly Society Recording Scheme dataset on NBN Atlas.
+# It also imports water quality data available open access online from
+# the Environment Agency and Earthwatch. 
+# Data is compared to assess correlation between water quality and dragonfly
+# presence.
 
 # Install packages ----
-desired_packages <- c("tidyverse", "rnrfa", "sp", "readr")
+desired_packages <- c("tidyverse", "rnrfa", "sp", "readr", "sf")
 
 for (pkg in desired_packages) {
   if(!require(pkg, character.only = TRUE)){
@@ -84,7 +87,9 @@ riverine_odonata <- read_csv("G:/My Drive/Research project/riverine_odonata.csv"
 
 # Clean Dragonfly Data ----
 # Select columns required
-r_o_selected_headers <- select(riverine_odonata, lifeStage, eventDate, gridReference, scientificName)
+colnames(riverine_odonata)[122] <- "longitude"
+colnames(riverine_odonata)[133] <- "latitude"
+r_o_selected_headers <- select(riverine_odonata, lifeStage, eventDate, gridReference, scientificName, longitude, latitude)
 
 # Look at life stage variety:
 lifeStageVariety <- table(r_o_selected_headers$lifeStage)
@@ -119,35 +124,62 @@ if (viewing_mode){
 }
 
 # Remove entries where precision is less than 6 figures.
-r_o_since2010_more_precise <- r_o_since2010 %>% filter(grPrecision > 5)
+r_o_since2010_more_precise <- r_o_since2010 %>% filter(grPrecision > 7)
+
+# Convert 
 
 # Import water quality data ----
 ea_water_quality <- read_csv("G:/My Drive/Research project/ea_water_quality.csv")
 
 # If have missing values of location, remove.
-#WHy does this only show one of thetwo summaries?? TODO
 if (viewing_mode) {
-  summary(ea_water_quality$sample.samplingPoint.northing)
-  summary(ea_water_quality$sample.samplingPoint.easting)
+  print(summary(ea_water_quality$sample.samplingPoint.northing))
+  print(summary(ea_water_quality$sample.samplingPoint.easting))
 }
 # This ^ shows 1 NA.
 ea_water_quality <- ea_water_quality[!is.na(ea_water_quality$sample.samplingPoint.easting),]
 if (viewing_mode) {
-  summary(ea_water_quality$sample.samplingPoint.northing)
-  summary(ea_water_quality$sample.samplingPoint.easting)
+  print(summary(ea_water_quality$sample.samplingPoint.northing))
+  print(summary(ea_water_quality$sample.samplingPoint.easting))
 }
 # All good, now removed.
 
-# Convert to eastings and northings
+# Convert eastings and northings to longitude and latitude
 ea_water_quality <- convert_lnglat(ea_water_quality, "sample.samplingPoint.easting", "sample.samplingPoint.northing")
 
-# dfly data has long lat and gr
-# ea has e and n TURN INTO LONG LAT
-# earthwater has long lat 
+# Notes on location:
+# BDS dragonfly data is given as a longitude and latidude and grid reference
+# EA data is given as Eastings and Northings.
+# Earthwatch data is given as longitude and latitude. 
 
 # Import earthwater wq
 ##earthwater_water_quality <- read_csv("G:/My Drive/Research project/earthwater_water_quality.csv")
 
 
-# Compare data to find points close together?
-# see notes
+# Compare data to find points close together ----
+#Convert dataframes to spatial objects
+species_sf <- st_as_sf(r_o_since2010_more_precise, coords = c("longitude", "latitude"), crs = 4326)
+water_sf   <- st_as_sf(ea_water_quality, coords = c("Long", "Lat"), crs = 4326)
+
+#Convert to a flat co-ord system measured in metres.
+sf_wq_proj <- st_transform(water_sf, 32630)  # Change EPSG to appropriate UTM zone
+sf_dragonfly_proj <- st_transform(species_sf, 32630)
+
+# For each dragonfly record, find index of nearest water quality record
+nearest_idx <- st_nearest_feature(sf_dragonfly_proj, sf_wq_proj)
+
+# Calculate distance to nearest water quality record
+distances <- st_distance(sf_dragonfly_proj, sf_wq_proj[nearest_idx, ], by_element = TRUE)
+
+# Filter to only include dragonfly records within 500m of a water quality record
+within_500m <- as.numeric(distances) <= 500  # logical vector
+sf_dragonfly_filtered <- sf_dragonfly_proj[within_500m, ]
+nearest_idx_filtered <- nearest_idx[within_500m]
+sf_dragonfly_filtered$nearest_wq_result <- sf_wq_proj$result[nearest_idx_filtered]  # assuming you have an ID column
+# This is assuming the wq data was all for the same thing - its not!
+sf_dragonfly_filtered <- st_transform(sf_dragonfly_filtered, 4326)
+
+#Now I have a list of records of dragonflies with nearest WQ data
+# Want to consider:
+# Do you get more of a dragonfly when eg PH is lower?
+# Look at distribution of water quality records with or without dragonfly records associated, and see what ph is
