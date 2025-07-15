@@ -179,7 +179,36 @@ sf_dragonfly_filtered$nearest_wq_result <- sf_wq_proj$result[nearest_idx_filtere
 # This is assuming the wq data was all for the same thing - its not!
 sf_dragonfly_filtered <- st_transform(sf_dragonfly_filtered, 4326)
 
-#Now I have a list of records of dragonflies with nearest WQ data
-# Want to consider:
-# Do you get more of a dragonfly when eg PH is lower?
-# Look at distribution of water quality records with or without dragonfly records associated, and see what ph is
+# For each water quality record, identify whether there is a dragonfly record
+# within 500m within 1 year
+within_500m_list <- st_is_within_distance(sf_wq_proj, sf_dragonfly_proj, dist = 500)
+
+library(dplyr)
+
+wq_dragonfly_pairs <- lapply(seq_along(within_500m_list), function(i) {
+  if (length(within_500m_list[[i]]) == 0) return(NULL)
+  data.frame(
+    wq_index = i,
+    dragonfly_index = within_500m_list[[i]]
+  )
+}) %>% bind_rows()
+
+# Step 3: Add date columns for filtering
+species_sf$eventDate_parsed <- as.Date(species_sf$eventDate, format = "%Y-%m-%d")
+
+
+
+wq_dragonfly_pairs <- wq_dragonfly_pairs %>%
+  mutate(
+    wq_date = sf_wq_proj$sample.sampleDateTime[wq_index],
+    dragonfly_date = sf_dragonfly_proj$eventDate[dragonfly_index],
+    date_diff = abs(as.numeric(difftime(wq_date, dragonfly_date, units = "days")))
+  )
+
+# Step 4: Filter pairs to those within 365 days
+wq_dragonfly_pairs_filtered <- wq_dragonfly_pairs %>%
+  filter(date_diff <= 365)
+
+# Step 5: Mark water quality records that have at least one dragonfly nearby in space AND time
+sf_wq_proj$dragonfly_within_500m_1yr <- FALSE
+sf_wq_proj$dragonfly_within_500m_1yr[unique(wq_dragonfly_pairs_filtered$wq_index)] <- TRUE
