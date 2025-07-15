@@ -91,6 +91,9 @@ colnames(riverine_odonata)[122] <- "longitude"
 colnames(riverine_odonata)[133] <- "latitude"
 r_o_selected_headers <- select(riverine_odonata, lifeStage, eventDate, gridReference, scientificName, longitude, latitude)
 
+# Select just one species:
+r_o_selected_headers <- r_o_selected_headers %>% filter(scientificName == "Calopteryx virgo")
+
 # Look at life stage variety:
 lifeStageVariety <- table(r_o_selected_headers$lifeStage)
 if(viewing_mode){
@@ -102,7 +105,7 @@ if(viewing_mode){
 #TODO check the next step deals with all eventualities correctly!
 r_o_selected_headers$eventDate <- as.Date(r_o_selected_headers$eventDate)
 # Remove anything before 2010
-r_o_since2010 <- r_o_selected_headers %>% filter(year(eventDate) > "2010")
+r_o_since2010 <- r_o_selected_headers %>% filter(eventDate > '2010')
 
 # Look at species variety:
 spVariety <- table(r_o_since2010$scientificName)
@@ -130,6 +133,10 @@ r_o_since2010_more_precise <- r_o_since2010 %>% filter(grPrecision > 7)
 
 # Import water quality data ----
 ea_water_quality <- read_csv("G:/My Drive/Research project/ea_water_quality.csv")
+
+# Filter results just to ammonia:
+ea_water_quality <- ea_water_quality %>% filter(str_detect(determinand.label, "Ammonia\\(N\\)"))
+
 
 # If have missing values of location, remove.
 if (viewing_mode) {
@@ -160,6 +167,10 @@ ea_water_quality <- convert_lnglat(ea_water_quality, "sample.samplingPoint.easti
 #Convert dataframes to spatial objects
 species_sf <- st_as_sf(r_o_since2010_more_precise, coords = c("longitude", "latitude"), crs = 4326)
 water_sf   <- st_as_sf(ea_water_quality, coords = c("Long", "Lat"), crs = 4326)
+
+#Transform date into date format
+species_sf$eventDate_parsed <- as.Date(species_sf$eventDate, format = "%Y-%m-%d")
+
 
 #Convert to a flat co-ord system measured in metres.
 sf_wq_proj <- st_transform(water_sf, 32630)  # Change EPSG to appropriate UTM zone
@@ -194,14 +205,12 @@ wq_dragonfly_pairs <- lapply(seq_along(within_500m_list), function(i) {
 }) %>% bind_rows()
 
 # Step 3: Add date columns for filtering
-species_sf$eventDate_parsed <- as.Date(species_sf$eventDate, format = "%Y-%m-%d")
-
 
 
 wq_dragonfly_pairs <- wq_dragonfly_pairs %>%
   mutate(
     wq_date = sf_wq_proj$sample.sampleDateTime[wq_index],
-    dragonfly_date = sf_dragonfly_proj$eventDate[dragonfly_index],
+    dragonfly_date = sf_dragonfly_proj$eventDate_parsed[dragonfly_index],
     date_diff = abs(as.numeric(difftime(wq_date, dragonfly_date, units = "days")))
   )
 
@@ -212,3 +221,38 @@ wq_dragonfly_pairs_filtered <- wq_dragonfly_pairs %>%
 # Step 5: Mark water quality records that have at least one dragonfly nearby in space AND time
 sf_wq_proj$dragonfly_within_500m_1yr <- FALSE
 sf_wq_proj$dragonfly_within_500m_1yr[unique(wq_dragonfly_pairs_filtered$wq_index)] <- TRUE
+
+# See how many records are left:
+if(viewing_mode){
+  table(sf_wq_proj$dragonfly_within_500m_1yr)
+}
+
+# See if there's a relation between C. virgo presence and Ammonia(N)
+cor.test(as.numeric(sf_wq_proj$dragonfly_within_500m_1yr), sf_wq_proj$result)
+# Not sig
+boxplot(sf_wq_proj$result~sf_wq_proj$dragonfly_within_500m_1yr,
+        data=sf_wq_proj,
+        main="Ammonia and C. virgo presence",
+        xlab="Dragonfly presence",
+        ylab="Result",
+        col="orange",
+        border="brown"
+)
+
+
+## Repeat the above with other species and wq results :)
+
+
+#Decide which ones to look at:
+# Step 1: Create the table of chemical counts
+chemical_counts <- table(ea_water_quality$determinand.label)
+
+# Step 2: Convert the table to a data frame
+chemical_df <- as.data.frame(chemical_counts)
+
+# Step 3: Install and load the 'writexl' package (if not already installed)
+install.packages("writexl")      # Run only once
+library(writexl)
+
+# Step 4: Write the data frame to an Excel file
+write_xlsx(chemical_df, "chemical_counts.xlsx")
