@@ -8,7 +8,7 @@
 # presence.
 
 # Install packages ----
-desired_packages <- c("tidyverse", "rnrfa", "sp", "readr", "sf")
+desired_packages <- c("tidyverse", "rnrfa", "sp", "readr", "sf", "dplyr", "anytime")
 
 for (pkg in desired_packages) {
   if(!require(pkg, character.only = TRUE)){
@@ -91,8 +91,6 @@ colnames(riverine_odonata)[122] <- "longitude"
 colnames(riverine_odonata)[133] <- "latitude"
 r_o_selected_headers <- select(riverine_odonata, lifeStage, eventDate, gridReference, scientificName, longitude, latitude)
 
-# Select just one species:
-r_o_selected_headers <- r_o_selected_headers %>% filter(scientificName == "Calopteryx virgo")
 
 # Look at life stage variety:
 lifeStageVariety <- table(r_o_selected_headers$lifeStage)
@@ -103,17 +101,15 @@ if(viewing_mode){
 
 # Convert to R Date format
 #TODO check the next step deals with all eventualities correctly!
-r_o_selected_headers$eventDate <- as.Date(r_o_selected_headers$eventDate)
+r_o_selected_headers$eventDate <- as.Date(anydate(r_o_selected_headers$eventDate))
 # Remove anything before 2010
-r_o_since2010 <- r_o_selected_headers %>% filter(eventDate > '2010')
+r_o_since2010 <- r_o_selected_headers %>% filter(eventDate > anydate('01-01-2010'))
 
 # Look at species variety:
 spVariety <- table(r_o_since2010$scientificName)
 if (viewing_mode){
   view(spVariety)
 }
-
-# Maybe not enough of some species - to check later 
 
 # Look at grid refs and their precision:
 grVariety <- table(r_o_since2010$gridReference)
@@ -165,82 +161,122 @@ ea_water_quality <- convert_lnglat(ea_water_quality, "sample.samplingPoint.easti
 
 # Compare data to find points close together ----
 #Convert dataframes to spatial objects
-species_sf <- st_as_sf(r_o_since2010_more_precise, coords = c("longitude", "latitude"), crs = 4326)
-water_sf   <- st_as_sf(ea_water_quality, coords = c("Long", "Lat"), crs = 4326)
-
-#Transform date into date format
-species_sf$eventDate_parsed <- as.Date(species_sf$eventDate, format = "%Y-%m-%d")
-
-
-#Convert to a flat co-ord system measured in metres.
-sf_wq_proj <- st_transform(water_sf, 32630)  # Change EPSG to appropriate UTM zone
-sf_dragonfly_proj <- st_transform(species_sf, 32630)
-
-# For each dragonfly record, find index of nearest water quality record
-nearest_idx <- st_nearest_feature(sf_dragonfly_proj, sf_wq_proj)
-
-# Calculate distance to nearest water quality record
-distances <- st_distance(sf_dragonfly_proj, sf_wq_proj[nearest_idx, ], by_element = TRUE)
-
-# Filter to only include dragonfly records within 500m of a water quality record
-within_500m <- as.numeric(distances) <= 500  # logical vector
-sf_dragonfly_filtered <- sf_dragonfly_proj[within_500m, ]
-nearest_idx_filtered <- nearest_idx[within_500m]
-sf_dragonfly_filtered$nearest_wq_result <- sf_wq_proj$result[nearest_idx_filtered]  # assuming you have an ID column
-# This is assuming the wq data was all for the same thing - its not!
-sf_dragonfly_filtered <- st_transform(sf_dragonfly_filtered, 4326)
-
-# For each water quality record, identify whether there is a dragonfly record
-# within 500m within 1 year
-within_500m_list <- st_is_within_distance(sf_wq_proj, sf_dragonfly_proj, dist = 500)
-
-library(dplyr)
-
-wq_dragonfly_pairs <- lapply(seq_along(within_500m_list), function(i) {
-  if (length(within_500m_list[[i]]) == 0) return(NULL)
-  data.frame(
-    wq_index = i,
-    dragonfly_index = within_500m_list[[i]]
-  )
-}) %>% bind_rows()
-
-# Step 3: Add date columns for filtering
-
-
-wq_dragonfly_pairs <- wq_dragonfly_pairs %>%
-  mutate(
-    wq_date = sf_wq_proj$sample.sampleDateTime[wq_index],
-    dragonfly_date = sf_dragonfly_proj$eventDate_parsed[dragonfly_index],
-    date_diff = abs(as.numeric(difftime(wq_date, dragonfly_date, units = "days")))
-  )
-
-# Step 4: Filter pairs to those within 365 days
-wq_dragonfly_pairs_filtered <- wq_dragonfly_pairs %>%
-  filter(date_diff <= 365)
-
-# Step 5: Mark water quality records that have at least one dragonfly nearby in space AND time
-sf_wq_proj$dragonfly_within_500m_1yr <- FALSE
-sf_wq_proj$dragonfly_within_500m_1yr[unique(wq_dragonfly_pairs_filtered$wq_index)] <- TRUE
-
-# See how many records are left:
-if(viewing_mode){
-  table(sf_wq_proj$dragonfly_within_500m_1yr)
+# Select just one species:
+run_analysis_per_species <- function(species_name){
+  print("Results for")
+  print(species_name)
+  r_o_since2010_more_precise <- r_o_since2010_more_precise %>% filter(scientificName == species_name)
+  
+  species_sf <- st_as_sf(r_o_since2010_more_precise, coords = c("longitude", "latitude"), crs = 4326)
+  water_sf   <- st_as_sf(ea_water_quality, coords = c("Long", "Lat"), crs = 4326)
+  
+  #Transform date into date format
+  species_sf$eventDate_parsed <- as.Date(species_sf$eventDate, format = "%Y-%m-%d")
+  
+  #Convert to a flat co-ord system measured in metres.
+  sf_wq_proj <- st_transform(water_sf, 32630)  # Change EPSG to appropriate UTM zone
+  sf_dragonfly_proj <- st_transform(species_sf, 32630)
+  
+  # For each dragonfly record, find index of nearest water quality record
+  nearest_idx <- st_nearest_feature(sf_dragonfly_proj, sf_wq_proj)
+  
+  # Calculate distance to nearest water quality record
+  distances <- st_distance(sf_dragonfly_proj, sf_wq_proj[nearest_idx, ], by_element = TRUE)
+  
+  # Filter to only include dragonfly records within 500m of a water quality record
+  within_500m <- as.numeric(distances) <= 500  # logical vector
+  sf_dragonfly_filtered <- sf_dragonfly_proj[within_500m, ]
+  nearest_idx_filtered <- nearest_idx[within_500m]
+  sf_dragonfly_filtered$nearest_wq_result <- sf_wq_proj$result[nearest_idx_filtered]  # assuming you have an ID column
+  # This is assuming the wq data was all for the same thing - its not!
+  sf_dragonfly_filtered <- st_transform(sf_dragonfly_filtered, 4326)
+  
+  # For each water quality record, identify whether there is a dragonfly record
+  # within 500m within 1 year
+  within_500m_list <- st_is_within_distance(sf_wq_proj, sf_dragonfly_proj, dist = 500)
+  
+  wq_dragonfly_pairs <- lapply(seq_along(within_500m_list), function(i) {
+    if (length(within_500m_list[[i]]) == 0) return(NULL)
+    data.frame(
+      wq_index = i,
+      dragonfly_index = within_500m_list[[i]]
+    )
+  }) %>% bind_rows()
+  
+  # Step 3: Add date columns for filtering
+  
+  
+  wq_dragonfly_pairs <- wq_dragonfly_pairs %>%
+    mutate(
+      wq_date = sf_wq_proj$sample.sampleDateTime[wq_index],
+      dragonfly_date = sf_dragonfly_proj$eventDate_parsed[dragonfly_index],
+      date_diff = abs(as.numeric(difftime(wq_date, dragonfly_date, units = "days")))
+    )
+  
+  # Step 4: Filter pairs to those within 365 days
+  wq_dragonfly_pairs_filtered <- wq_dragonfly_pairs %>%
+    filter(date_diff <= 365)
+  
+  # Step 5: Mark water quality records that have at least one dragonfly nearby in space AND time
+  sf_wq_proj$dragonfly_within_500m_1yr <- FALSE
+  sf_wq_proj$dragonfly_within_500m_1yr[unique(wq_dragonfly_pairs_filtered$wq_index)] <- TRUE
+  
+  # See how many records are left:
+  if(viewing_mode){
+    table(sf_wq_proj$dragonfly_within_500m_1yr)
+  }
+  
+  # See if there's a relation between species presence and Ammonia(N)
+  correlation_test_results <- cor.test(as.numeric(sf_wq_proj$dragonfly_within_500m_1yr), sf_wq_proj$result)
+  
+  if(viewing_mode){
+    print("Correlation test results: \n\n")
+    print(correlation_test_results)
+    table_header <- paste("Ammonia(N) and Presence of", species_name, sep=" ")
+    boxplot(sf_wq_proj$result~sf_wq_proj$dragonfly_within_500m_1yr,
+            data=sf_wq_proj,
+            main=table_header,
+            xlab="Dragonfly presence",
+            ylab="Water Quality Result",
+            col="orange",
+            border="brown"
+      )
+  }
+  
+  # Try with glms:
+  model <- glm(sf_wq_proj$dragonfly_within_500m_1yr ~ sf_wq_proj$result,family=binomial)
+  if(viewing_mode){
+    print("GLM output: \n\n")
+    summary(model)$coefficients
+  }
 }
+  
+if(viewing_mode){
+  cat("C. virgo results:")
+}
+run_analysis_per_species("Calopteryx virgo")
+if(viewing_mode){
+  cat("C. splendens results:")
+}
+run_analysis_per_species("Calopteryx splendens")
+if(viewing_mode){
+  cat("Libellula fulva results:")
+}
+run_analysis_per_species("Libellula fulva")
+if(viewing_mode){
+  cat("Cordulegaster boltonii results:")
+}
+run_analysis_per_species("Cordulegaster boltonii")
+if(viewing_mode){
+  cat("Platycnemis pennipes results:")
+}
+run_analysis_per_species("Platycnemis pennipes")
+if(viewing_mode){
+  cat("Gomphus vulgatissimus results:")
+}
+run_analysis_per_species("Gomphus vulgatissimus")
 
-# See if there's a relation between C. virgo presence and Ammonia(N)
-cor.test(as.numeric(sf_wq_proj$dragonfly_within_500m_1yr), sf_wq_proj$result)
-# Not sig
-boxplot(sf_wq_proj$result~sf_wq_proj$dragonfly_within_500m_1yr,
-        data=sf_wq_proj,
-        main="Ammonia and C. virgo presence",
-        xlab="Dragonfly presence",
-        ylab="Result",
-        col="orange",
-        border="brown"
-)
 
-
-## Repeat the above with other species and wq results :)
 
 
 #Decide which ones to look at:
@@ -256,3 +292,4 @@ library(writexl)
 
 # Step 4: Write the data frame to an Excel file
 write_xlsx(chemical_df, "chemical_counts.xlsx")
+
