@@ -3,12 +3,22 @@
 # This file imports riverine Odonata presence-only data from the British 
 # Dragonfly Society Recording Scheme dataset on NBN Atlas.
 # It also imports water quality data available open access online from
-# the Environment Agency and Earthwatch. 
+# the Environment Agency. 
 # Data is compared to assess correlation between water quality and dragonfly
 # presence.
 
+# Define output file
+output_file <- "G:/My Drive/Research project/odonata_analysis_results.txt"
+
+# Clear or create the file
+writeLines(c("Riverine Odonata Analysis Results\n", 
+             paste("Generated on:", Sys.time()), 
+             "\n-----------------------------------\n"), 
+           output_file)
+
+
 # Install packages ----
-desired_packages <- c("tidyverse", "rnrfa", "sp", "readr", "sf", "dplyr", "anytime")
+desired_packages <- c("tidyverse", "rnrfa", "sp", "readr", "sf", "dplyr", "anytime", "logistf")
 
 for (pkg in desired_packages) {
   if(!require(pkg, character.only = TRUE)){
@@ -125,14 +135,11 @@ if (viewing_mode){
 # Remove entries where precision is less than 6 figures.
 r_o_since2010_more_precise <- r_o_since2010 %>% filter(grPrecision > 7)
 
-# Convert 
 
 # Import water quality data ----
 ea_water_quality <- read_csv("G:/My Drive/Research project/ea_water_quality.csv")
-
-# Filter results just to ammonia:
-ea_water_quality <- ea_water_quality %>% filter(str_detect(determinand.label, "Ammonia\\(N\\)"))
-
+#TODO can try this with 2024 dataset instead; and ultimately combine all data from 2010 onwards
+# TODO remove all variables from water_quality that aren't of interest ie other chemicals
 
 # If have missing values of location, remove.
 if (viewing_mode) {
@@ -153,22 +160,22 @@ ea_water_quality <- convert_lnglat(ea_water_quality, "sample.samplingPoint.easti
 # Notes on location:
 # BDS dragonfly data is given as a longitude and latidude and grid reference
 # EA data is given as Eastings and Northings.
-# Earthwatch data is given as longitude and latitude. 
-
-# Import earthwater wq
-##earthwater_water_quality <- read_csv("G:/My Drive/Research project/earthwater_water_quality.csv")
 
 
 # Compare data to find points close together ----
 #Convert dataframes to spatial objects
 # Select just one species:
-run_analysis_per_species <- function(species_name){
-  print("Results for")
-  print(species_name)
-  r_o_since2010_more_precise <- r_o_since2010_more_precise %>% filter(scientificName == species_name)
+run_analysis_per_species <- function(species_name, chemical){
+  cat(paste("\nAnalyzing species:", species_name, 
+            "with chemical:", chemical, "\n"), 
+      file = output_file, append = TRUE)
+
+  chosen_sp <- r_o_since2010_more_precise %>% filter(scientificName == species_name)
+  chosen_chem <- ea_water_quality %>% filter(str_detect(determinand.label, chemical))
   
-  species_sf <- st_as_sf(r_o_since2010_more_precise, coords = c("longitude", "latitude"), crs = 4326)
-  water_sf   <- st_as_sf(ea_water_quality, coords = c("Long", "Lat"), crs = 4326)
+  
+  species_sf <- st_as_sf(chosen_sp, coords = c("longitude", "latitude"), crs = 4326)
+  water_sf   <- st_as_sf(chosen_chem, coords = c("Long", "Lat"), crs = 4326)
   
   #Transform date into date format
   species_sf$eventDate_parsed <- as.Date(species_sf$eventDate, format = "%Y-%m-%d")
@@ -176,6 +183,24 @@ run_analysis_per_species <- function(species_name){
   #Convert to a flat co-ord system measured in metres.
   sf_wq_proj <- st_transform(water_sf, 32630)  # Change EPSG to appropriate UTM zone
   sf_dragonfly_proj <- st_transform(species_sf, 32630)
+  
+  # Include water quality sample type
+  sf_wq_proj$sample_type <- as.factor(sf_wq_proj$sample.sampledMaterialType.label)
+  # Include water quality sample purpose
+  sf_wq_proj$sample_purpose <- as.factor(sf_wq_proj$sample.purpose.label)
+  # Include water quality year and month
+  sf_wq_proj$sample.sampleDateTime <- as.POSIXct(sf_wq_proj$sample.sampleDateTime)
+  sf_wq_proj$sample_year  <- year(sf_wq_proj$sample.sampleDateTime)
+  sf_wq_proj$sample_month <- month(sf_wq_proj$sample.sampleDateTime, label = TRUE, abbr = TRUE)
+  sf_wq_proj$sample_year <- as.factor(sf_wq_proj$sample_year)
+  sf_wq_proj$sample_month <- as.factor(sf_wq_proj$sample_month)
+  #print("Tabels:")
+  #print(table(sf_wq_proj$sample_year))
+  #print(table(sf_wq_proj$sample_month))
+  #print(table(sf_wq_proj$sample_type))
+  #print(table(sf_wq_proj$sample_purpose))
+  sf_wq_proj$scaled_result <- scale(sf_wq_proj$result)
+  
   
   # For each dragonfly record, find index of nearest water quality record
   nearest_idx <- st_nearest_feature(sf_dragonfly_proj, sf_wq_proj)
@@ -187,7 +212,7 @@ run_analysis_per_species <- function(species_name){
   within_500m <- as.numeric(distances) <= 500  # logical vector
   sf_dragonfly_filtered <- sf_dragonfly_proj[within_500m, ]
   nearest_idx_filtered <- nearest_idx[within_500m]
-  sf_dragonfly_filtered$nearest_wq_result <- sf_wq_proj$result[nearest_idx_filtered]  # assuming you have an ID column
+  sf_dragonfly_filtered$nearest_wq_result <- sf_wq_proj$scaled_result[nearest_idx_filtered]  # assuming you have an ID column
   # This is assuming the wq data was all for the same thing - its not!
   sf_dragonfly_filtered <- st_transform(sf_dragonfly_filtered, 4326)
   
@@ -203,9 +228,14 @@ run_analysis_per_species <- function(species_name){
     )
   }) %>% bind_rows()
   
-  # Step 3: Add date columns for filtering
+  # Check if there are dragonfly-water quality record pairs within 500m.
+  if (nrow(wq_dragonfly_pairs) == 0) {
+    cat(paste(paste("No matching dragonfly-water quality pairs within 500m for ", species_name, " and ", chemical, ".")), file = output_file, append = TRUE)
+    message("No matching dragonfly-water quality pairs within 500m for ", species_name, " and ", chemical, ".")
+    return(NULL)
+  }
   
-  
+    # Step 3: Add date columns for filtering
   wq_dragonfly_pairs <- wq_dragonfly_pairs %>%
     mutate(
       wq_date = sf_wq_proj$sample.sampleDateTime[wq_index],
@@ -226,70 +256,118 @@ run_analysis_per_species <- function(species_name){
     table(sf_wq_proj$dragonfly_within_500m_1yr)
   }
   
-  # See if there's a relation between species presence and Ammonia(N)
-  correlation_test_results <- cor.test(as.numeric(sf_wq_proj$dragonfly_within_500m_1yr), sf_wq_proj$result)
+  #Following plots should only be used out of for loop unless you want to save them as they're created before the next one!
+  #if(viewing_mode){
+  #  table_header <- paste("Result for", chemical, "and Presence of", species_name, sep=" ")
+  #  boxplot(sf_wq_proj$result~sf_wq_proj$dragonfly_within_500m_1yr,
+  #          data=sf_wq_proj,
+  #          main=table_header,
+  #          xlab="Dragonfly presence",
+  #          ylab="Water Quality Result",
+  #          col="orange",
+  #          border="brown"
+  #    )
+  #}
+  # 
+  # 
+  # # Base model with just water quality result
+  # model <- glm(sf_wq_proj$dragonfly_within_500m_1yr ~ sf_wq_proj$scaled_result,family=binomial)
+  # if(viewing_mode){
+  #   cat("GLM output:")
+  #   print(summary(model)$coefficients)
+  # }
+  # #Put output into file:
+  # glm_summary <- capture.output(summary(model))
+  # cat("GLM Output:\n", file = output_file, append = TRUE)
+  # cat(paste(glm_summary, collapse = "\n"), file = output_file, append = TRUE)
+  # cat("\n---------------------------\n", file = output_file, append = TRUE)
+  # 
+  # # Full model with all other variables
+  # full_model <- glm(
+  #   dragonfly_within_500m_1yr ~ scaled_result + sample_type + sample_purpose + sample_month,
+  #   data = sf_wq_proj,
+  #   family = binomial
+  # )
+  # if(viewing_mode){
+  #   cat("GLM output from full model:")
+  #   print(summary(full_model)$coefficients)
+  # }
+  # #Put output into file:
+  # full_glm_summary <- capture.output(summary(full_model))
+  # cat("Full GLM Output:\n", file = output_file, append = TRUE)
+  # cat(paste(full_glm_summary, collapse = "\n"), file = output_file, append = TRUE)
+  # cat("\n---------------------------\n", file = output_file, append = TRUE)
+  # 
+  # # Do stepwise comparison to get best model
+  # best_model <- step(full_model, direction = "both")
+  # if(viewing_mode){
+  #   cat("GLM output from best model:")
+  #   print(summary(best_model)$coefficients)
+  # }
+  # #Put output into file:
+  # best_model_summary <- capture.output(summary(best_model))
+  # cat("Full GLM Output:\n", file = output_file, append = TRUE)
+  # cat(paste(best_model_summary, collapse = "\n"), file = output_file, append = TRUE)
+  # cat("\n---------------------------\n", file = output_file, append = TRUE)
+  # 
+  # # Compare the models
+  # aic_output <- AIC(model, full_model, best_model)
+  # 
+  # # Create a nicely formatted table
+  # aic_table <- capture.output(print(aic_output))
+  # 
+  # # Write the AIC results to file
+  # cat(paste("\nAIC Output for ", species_name, 
+  #           " with chemical: ", chemical, "\n"), 
+  #     file = output_file, append = TRUE)
+  # cat(paste(aic_table, collapse = "\n"), file = output_file, append = TRUE)
+  # cat("\n\n", file = output_file, append = TRUE)  # Add spacing
+  # 
+  # print("here")
+  # print(chem)
+  # print(species)
+  # print(table(sf_wq_proj$dragonfly_within_500m_1yr))
+  # print(ggplot(sf_wq_proj, aes(x = scaled_result, y = dragonfly_within_500m_1yr)) +
+  #       geom_jitter(alpha = 0.3) +
+  #       geom_smooth(method = "glm", method.args = list(family = "binomial")))
+  # 
+  # GLM identified a full model is best, but for accurate coefficients we need to use the FIrth model due to inbalanced data
+  firth_model <- logistf(dragonfly_within_500m_1yr ~ scaled_result + sample_month + sample_purpose + sample_type,
+                         data = sf_wq_proj)
   
-  if(viewing_mode){
-    print("Correlation test results: \n\n")
-    print(correlation_test_results)
-    table_header <- paste("Ammonia(N) and Presence of", species_name, sep=" ")
-    boxplot(sf_wq_proj$result~sf_wq_proj$dragonfly_within_500m_1yr,
-            data=sf_wq_proj,
-            main=table_header,
-            xlab="Dragonfly presence",
-            ylab="Water Quality Result",
-            col="orange",
-            border="brown"
-      )
+  firth_summary <- capture.output(summary(firth_model))
+  cat("Firth Output:\n", file = output_file, append = TRUE)
+  cat(paste(firth_summary, collapse = "\n"), file = output_file, append = TRUE)
+  cat("\n---------------------------\n", file = output_file, append = TRUE)
+  
+  exp_coef <- exp(coef(firth_model))
+  conf_int <- exp(confint(firth_model))
+  #TODO
+}
+  
+list_of_species <- list("Calopteryx virgo", "Calopteryx splendens",
+                        "Libellula fulva", "Cordulegaster boltonii",
+                        "Platycnemis pennipes", "Gomphus vulgatissimus")
+
+list_of_chems <- list("Ammonia(N)", "Temp Water", "BOD ATU", "pH", "O Diss %sat",
+                      "Orthophospht", "N Oxidised", "Cond @ 25C", "Sld Sus@105C")
+
+#for (species in list_of_species) {
+#  for (chem in list_of_chems) {
+#    run_analysis_per_species(species, chem)
+#  }
+#}
+
+short_list_of_species <- list("Calopteryx virgo", "Calopteryx splendens")
+
+short_list_of_chems <- list("Temp Water")
+
+for (species in short_list_of_species) {
+  for (chem in short_list_of_chems) {
+    run_analysis_per_species(species, chem)
   }
-  
-  # Try with glms:
-  model <- glm(sf_wq_proj$dragonfly_within_500m_1yr ~ sf_wq_proj$result,family=binomial)
-  if(viewing_mode){
-    print("GLM output: \n\n")
-    summary(model)$coefficients
-  }
 }
-  
-if(viewing_mode){
-  cat("C. virgo results:")
-}
-run_analysis_per_species("Calopteryx virgo")
-if(viewing_mode){
-  cat("C. splendens results:")
-}
-run_analysis_per_species("Calopteryx splendens")
-if(viewing_mode){
-  cat("Libellula fulva results:")
-}
-run_analysis_per_species("Libellula fulva")
-if(viewing_mode){
-  cat("Cordulegaster boltonii results:")
-}
-run_analysis_per_species("Cordulegaster boltonii")
-if(viewing_mode){
-  cat("Platycnemis pennipes results:")
-}
-run_analysis_per_species("Platycnemis pennipes")
-if(viewing_mode){
-  cat("Gomphus vulgatissimus results:")
-}
-run_analysis_per_species("Gomphus vulgatissimus")
 
 
 
-
-#Decide which ones to look at:
-# Step 1: Create the table of chemical counts
-chemical_counts <- table(ea_water_quality$determinand.label)
-
-# Step 2: Convert the table to a data frame
-chemical_df <- as.data.frame(chemical_counts)
-
-# Step 3: Install and load the 'writexl' package (if not already installed)
-install.packages("writexl")      # Run only once
-library(writexl)
-
-# Step 4: Write the data frame to an Excel file
-write_xlsx(chemical_df, "chemical_counts.xlsx")
 

@@ -12,3 +12,7 @@ within 500m within 1 year?
 Then have a quantitative value (water quality) to compare with a binary value.
 See if dragonfly presence of these species is more likely with certain water quality values.
 
+
+All EA water quality data is from 2025 (Jan-May) CURRENTLY
+
+
