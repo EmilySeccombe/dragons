@@ -8,6 +8,7 @@
 # presence.
 
 # Define output file
+# NB will need to change the file lines
 output_file <- "G:/My Drive/Research project/dragons/odonata_analysis_results.txt"
 
 # Clear or create the file
